@@ -1,10 +1,10 @@
 #ifndef CAMERA_H
 #define CAMERA_H
 
-#include <cmath>
-#include <ostream>
-#include <omp.h>
 #include <atomic>
+#include <cmath>
+#include <omp.h>
+#include <ostream>
 
 #include "color.h"
 #include "hittable.h"
@@ -30,10 +30,11 @@ public:
   void render(const hittable& world, std::ostream& output) {
     initialize();
 
-    std::atomic<int> lines_remaining {image_height};
+    std::atomic<int> lines_remaining{image_height};
     output << "P3\n" << image_width << ' ' << image_height << "\n255\n";
+    std::vector<color> pixel_buffer(image_width * image_height);
 
-    #pragma omp parallel for schedule(dynamic)
+#pragma omp parallel for schedule(dynamic)
     for (int j = 0; j < image_height; j++) {
       // Only one thread updates the progress occasionally
       if (omp_get_thread_num() == 0) {
@@ -46,7 +47,16 @@ public:
           ray r = get_ray(i, j);
           pixel_color += ray_color(r, max_depth, world);
         }
-        write_color(output, pixel_samples_scale * pixel_color);
+        int idx = j * image_width + i; // flatten (i,j) -> 1D index
+        pixel_buffer[idx] = pixel_samples_scale * pixel_color;
+      }
+    }
+
+    // Now, single-threaded: write pixels in correct order
+    for (int j = 0; j < image_height; j++) {
+      for (int i = 0; i < image_width; i++) {
+        int idx = j * image_width + i;
+        write_color(output, pixel_buffer[idx]);
       }
     }
 
