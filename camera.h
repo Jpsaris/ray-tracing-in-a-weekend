@@ -3,6 +3,8 @@
 
 #include <cmath>
 #include <ostream>
+#include <omp.h>
+#include <atomic>
 
 #include "color.h"
 #include "hittable.h"
@@ -28,10 +30,16 @@ public:
   void render(const hittable& world, std::ostream& output) {
     initialize();
 
+    std::atomic<int> lines_remaining {image_height};
     output << "P3\n" << image_width << ' ' << image_height << "\n255\n";
 
+    #pragma omp parallel for schedule(dynamic)
     for (int j = 0; j < image_height; j++) {
-      std::clog << "\rScanlines remaining: " << (image_height - j) << ' ' << std::flush;
+      // Only one thread updates the progress occasionally
+      if (omp_get_thread_num() == 0) {
+        std::clog << "\rScanlines remaining: " << lines_remaining << ' ' << std::flush;
+      }
+      lines_remaining--;
       for (int i = 0; i < image_width; i++) {
         color pixel_color(0, 0, 0);
         for (int sample = 0; sample < samples_per_pixel; sample++) {
