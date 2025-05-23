@@ -1,70 +1,69 @@
+#include <ctime>
 #include <fstream>
+#include <iostream>
 
 #include "camera.h"
 #include "hittable_list.h"
 #include "material.h"
 #include "sphere.h"
 
-int main() {
-  hittable_list world;
 
-  auto ground_material = std::make_shared<lambertian>(color(0.5, 0.5, 0.5));
-  world.add(std::make_shared<sphere>(point3(0, -1000, 0), 1000, ground_material));
-
-  for (int a = -11; a < 11; a++) {
-    for (int b = -11; b < 11; b++) {
-      auto choose_mat = random_float();
-      point3 center(a + 0.9 * random_float(), 0.2, b + 0.9 * random_float());
-
-      if ((center - point3(4, 0.2, 0)).length() > 0.9) {
-        std::shared_ptr<material> sphere_material;
-
-        if (choose_mat < 0.8) {
-          // diffuse
-          auto albedo = color::random() * color::random();
-          sphere_material = std::make_shared<lambertian>(albedo);
-          world.add(std::make_shared<sphere>(center, 0.2, sphere_material));
-        } else if (choose_mat < 0.95) {
-          // metal
-          auto albedo = color::random(0.5, 1);
-          auto fuzz = random_float(0, 0.5);
-          sphere_material = std::make_shared<metal>(albedo, fuzz);
-          world.add(std::make_shared<sphere>(center, 0.2, sphere_material));
-        } else {
-          // glass
-          sphere_material = std::make_shared<dielectric>(1.5);
-          world.add(std::make_shared<sphere>(center, 0.2, sphere_material));
-        }
-      }
-    }
+#define checkCudaErrors(val) check_cuda((val), #val, __FILE__, __LINE__)
+void check_cuda(cudaError_t result, char const* const func, const char* const file,
+                int const line) {
+  if (result) {
+    std::cerr << "CUDA error = " << static_cast<unsigned int>(result) << " at " << file << ":"
+              << line << " '" << func << "' \n";
+    // Make sure we call CUDA Device Reset before exiting
+    cudaDeviceReset();
+    exit(99);
   }
+}
 
-  auto material1 = std::make_shared<dielectric>(1.5);
-  world.add(std::make_shared<sphere>(point3(0, 1, 0), 1.0, material1));
+void writeToFile(int image_width, int image_height, vec3* fb, size_t s) {
+  std::ofstream output("image.ppm");
+  output << "P3\n" << image_width << ' ' << image_height << "\n255\n";
+  for (size_t i = 0; i < image_width * image_height; ++i){
+    output << int(255.99 * fb[i].x()) << ' ' << int(255.99 * fb[i].y()) << ' ' << int(255.99*fb[i].z()) << '\n';
+  }
+}
 
-  auto material2 = std::make_shared<lambertian>(color(0.4, 0.2, 0.1));
-  world.add(std::make_shared<sphere>(point3(-4, 1, 0), 1.0, material2));
+__global__ void render(vec3* fb, int image_width, int image_height) {
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    int j = threadIdx.y + blockIdx.y * blockDim.y;
 
-  auto material3 = std::make_shared<metal>(color(0.7, 0.6, 0.5), 0.0);
-  world.add(std::make_shared<sphere>(point3(4, 1, 0), 1.0, material3));
+    if ((i >= image_width) || (j >= image_height)) return;
+    int idx = j * image_width + i;
 
-  camera cam;
+    fb[idx] = vec3(float(i) / (image_width - 1), float(j) / (image_height - 1), 0.0f);
+}
 
-  cam.aspect_ratio = 16.0 / 9.0;
-  cam.image_width = 1200;
-  cam.samples_per_pixel = 10;
-  cam.max_depth = 50;
+int main() {
 
-  cam.vfov = 20;
-  cam.lookfrom = point3(13, 2, 3);
-  cam.lookat = point3(0, 0, 0);
-  cam.vup = vec3(0, 1, 0);
+  // Image + CUDA buffer
 
-  cam.defocus_angle = 0.6;
-  cam.focus_dist = 10.0;
+  int image_width = 1200;
+  int image_height = 600;
 
-  // Write to image.ppm
-  std::ofstream output{"image.ppm"};
-  cam.render(world, output);
-  output.close();
+  int num_pixels = image_width * image_height;
+  size_t fb_size = num_pixels * sizeof(vec3);
+  vec3* fb;
+  checkCudaErrors(cudaMallocManaged((void**)&fb, fb_size));
+
+  int t_width = 8;
+  int t_height = 8;
+
+  dim3 blocks(image_width / t_width + 1, image_height / t_height + 1);
+  dim3 threads(t_width, t_height);
+
+  // Render
+  clock_t start, stop;
+  start = clock();
+  render<<<blocks, threads>>>(fb, image_width, image_height);
+  checkCudaErrors(cudaDeviceSynchronize()); // Blocks until all threads have completed.
+  stop = clock();
+  std::cout << (double)(stop - start) / CLOCKS_PER_SEC << '\n';
+
+  writeToFile(image_width, image_height, fb, fb_size);
+  checkCudaErrors(cudaFree(fb));
 }
